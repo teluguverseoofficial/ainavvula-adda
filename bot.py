@@ -3,6 +3,7 @@ import json
 import os
 import random
 import subprocess
+import time
 import urllib.parse
 import requests
 import edge_tts
@@ -17,7 +18,7 @@ PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
 
 client = genai.Client(api_key=GEMINI_KEY)
 
-# 1. GENERATE VIRAL TECH HACK SCRIPT + METADATA
+# 1. GENERATE VIRAL TECH HACK SCRIPT + METADATA (WITH 503 FALLBACK)
 def generate_tech_hack():
     angles = [
         "hidden Windows or Mac keyboard shortcut that saves hours",
@@ -42,14 +43,33 @@ def generate_tech_hack():
     "search_keyword": 1 or 2-word Pixabay video query (e.g. "computer", "technology", "smartphone", "coding"),
     "script": the spoken narration text only
     """
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json"
-        )
-    )
-    return json.loads(response.text)
+
+    models_to_try = [
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.6-flash"
+    ]
+
+    last_error = None
+    for model_name in models_to_try:
+        for attempt in range(2):
+            try:
+                print(f"Generating script with {model_name} (attempt {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"{model_name} failed: {e}")
+                last_error = e
+                time.sleep(5)
+
+    raise RuntimeError(f"All Gemini models unavailable after retries: {last_error}")
 
 # 2. GENERATE AMERICAN VOICEOVER + WORD-LEVEL SUBTITLES (.SRT)
 async def generate_voice_and_subs(script_text):
