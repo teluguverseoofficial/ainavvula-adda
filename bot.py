@@ -78,28 +78,42 @@ def generate_tech_hack():
 # 2. GENERATE AMERICAN VOICEOVER + WORD-LEVEL SUBTITLES (.SRT)
 async def generate_voice_and_subs(script_text):
     print("[2/5] Generating voiceover and subtitles...")
-    communicate = edge_tts.Communicate(
-        script_text,
-        "en-US-AndrewNeural",
-        rate="+12%",
-        boundary="WordBoundary"
-    )
-    submaker = edge_tts.SubMaker()
     
-    with open("voice.mp3", "wb") as audio_file:
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_file.write(chunk["data"])
-            elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
-                submaker.feed(chunk)
+    # Sanitize text so special characters don't crash the Edge TTS XML parser
+    clean_text = script_text.replace('*', '').replace('#', '').replace('"', '').replace('&', 'and').strip()
+    
+    # Auto-retry loop in case Microsoft servers drop the connection
+    for attempt in range(3):
+        try:
+            communicate = edge_tts.Communicate(
+                clean_text,
+                "en-US-AndrewNeural",
+                rate="+10%",
+                boundary="WordBoundary"
+            )
+            submaker = edge_tts.SubMaker()
+            
+            with open("voice.mp3", "wb") as audio_file:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_file.write(chunk["data"])
+                    elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
+                        submaker.feed(chunk)
 
-    srt_content = submaker.get_srt().strip()
-    if not srt_content:
-        srt_content = f"1\n00:00:00,000 --> 00:00:55,000\n{script_text}\n"
+            srt_content = submaker.get_srt().strip()
+            if not srt_content:
+                srt_content = f"1\n00:00:00,000 --> 00:00:55,000\n{clean_text}\n"
 
-    with open("subs.srt", "w", encoding="utf-8") as srt_file:
-        srt_file.write(srt_content + "\n")
-    print(f"Saved subs.srt ({len(srt_content)} bytes)")
+            with open("subs.srt", "w", encoding="utf-8") as srt_file:
+                srt_file.write(srt_content + "\n")
+            print(f"Saved subs.srt ({len(srt_content)} bytes)")
+            return # Success! Exit the function.
+            
+        except Exception as e:
+            print(f"TTS Attempt {attempt + 1} failed: {e}")
+            time.sleep(3)
+            
+    raise RuntimeError("Edge TTS failed after 3 attempts.")
 
 # 3. FETCH HD TECH B-ROLL FROM PIXABAY
 def fetch_background_video(keyword):
