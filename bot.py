@@ -22,7 +22,7 @@ PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
 
 client = genai.Client(
     api_key=GEMINI_KEY,
-    http_options=types.HttpOptions(timeout=30000)  # 30s timeout per request
+    http_options=types.HttpOptions(timeout=30000)
 )
 
 # 1. GENERATE VIRAL TECH HACK SCRIPT + METADATA
@@ -52,8 +52,8 @@ def generate_tech_hack():
     """
 
     models_to_try = [
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite"
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash"
     ]
 
     last_error = None
@@ -79,18 +79,28 @@ def generate_tech_hack():
 # 2. GENERATE AMERICAN VOICEOVER + WORD-LEVEL SUBTITLES (.SRT)
 async def generate_voice_and_subs(script_text):
     print("[2/5] Generating voiceover and subtitles...")
-    communicate = edge_tts.Communicate(script_text, "en-US-AndrewNeural", rate="+10%")
+    communicate = edge_tts.Communicate(
+        script_text,
+        "en-US-AndrewNeural",
+        rate="+10%",
+        boundary="WordBoundary"
+    )
     submaker = edge_tts.SubMaker()
     
     with open("voice.mp3", "wb") as audio_file:
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio_file.write(chunk["data"])
-            elif chunk["type"] == "WordBoundary":
+            elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
                 submaker.feed(chunk)
 
+    srt_content = submaker.get_srt().strip()
+    if not srt_content:
+        srt_content = f"1\n00:00:00,000 --> 00:00:45,000\n{script_text}\n"
+
     with open("subs.srt", "w", encoding="utf-8") as srt_file:
-        srt_file.write(submaker.get_srt())
+        srt_file.write(srt_content + "\n")
+    print(f"Saved subs.srt ({len(srt_content)} bytes)")
 
 # 3. FETCH HD TECH B-ROLL FROM PIXABAY
 def fetch_background_video(keyword):
