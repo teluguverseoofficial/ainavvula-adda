@@ -3,6 +3,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 import time
 import urllib.parse
 import requests
@@ -13,12 +14,18 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+# Force immediate log output in GitHub Actions
+sys.stdout.reconfigure(line_buffering=True)
+
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
 
-client = genai.Client(api_key=GEMINI_KEY)
+client = genai.Client(
+    api_key=GEMINI_KEY,
+    http_options=types.HttpOptions(timeout=30000)  # 30s timeout per request
+)
 
-# 1. GENERATE VIRAL TECH HACK SCRIPT + METADATA (WITH 503 FALLBACK)
+# 1. GENERATE VIRAL TECH HACK SCRIPT + METADATA
 def generate_tech_hack():
     angles = [
         "hidden Windows or Mac keyboard shortcut that saves hours",
@@ -45,34 +52,34 @@ def generate_tech_hack():
     """
 
     models_to_try = [
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.6-flash"
+        "gemini-2.5-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash"
     ]
 
     last_error = None
     for model_name in models_to_try:
-        for attempt in range(2):
-            try:
-                print(f"Generating script with {model_name} (attempt {attempt + 1})...")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
+        try:
+            print(f"[1/5] Generating script with {model_name}...")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
                 )
-                return json.loads(response.text)
-            except Exception as e:
-                print(f"{model_name} failed: {e}")
-                last_error = e
-                time.sleep(5)
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Model {model_name} unavailable: {e}")
+            last_error = e
+            time.sleep(2)
 
-    raise RuntimeError(f"All Gemini models unavailable after retries: {last_error}")
+    raise RuntimeError(f"All Gemini models failed: {last_error}")
 
 # 2. GENERATE AMERICAN VOICEOVER + WORD-LEVEL SUBTITLES (.SRT)
 async def generate_voice_and_subs(script_text):
+    print("[2/5] Generating voiceover and subtitles...")
     communicate = edge_tts.Communicate(script_text, "en-US-AndrewNeural", rate="+10%")
     submaker = edge_tts.SubMaker()
     
@@ -88,24 +95,30 @@ async def generate_voice_and_subs(script_text):
 
 # 3. FETCH HD TECH B-ROLL FROM PIXABAY
 def fetch_background_video(keyword):
+    print(f"[3/5] Fetching Pixabay B-roll for '{keyword}'...")
     encoded_query = urllib.parse.quote(keyword)
     url = f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={encoded_query}&per_page=10"
-    res = requests.get(url).json()
+    res = requests.get(url, timeout=20).json()
     
     hits = res.get("hits", [])
     if not hits:
-        res = requests.get(f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q=technology&per_page=10").json()
+        res = requests.get(
+            f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q=technology&per_page=10",
+            timeout=20
+        ).json()
         hits = res["hits"]
         
     chosen = random.choice(hits)
     videos = chosen["videos"]
     video_url = videos.get("medium", {}).get("url") or videos.get("large", {}).get("url")
     
+    video_data = requests.get(video_url, timeout=30).content
     with open("bg.mp4", "wb") as f:
-        f.write(requests.get(video_url).content)
+        f.write(video_data)
 
 # 4. RENDER 1080x1920 VERTICAL SHORT WITH BURNED-IN CAPTIONS (FFMPEG)
 def render_video():
+    print("[4/5] Rendering 1080x1920 video with FFmpeg...")
     style = (
         "FontName=DejaVu Sans,"
         "FontSize=18,"
@@ -135,6 +148,7 @@ def render_video():
 
 # 5. UPLOAD TO YOUTUBE DATA API V3
 def upload_to_youtube(metadata):
+    print("[5/5] Uploading video to YouTube...")
     creds = Credentials.from_authorized_user_file(
         "token.json", ["https://www.googleapis.com/auth/youtube.upload"]
     )
