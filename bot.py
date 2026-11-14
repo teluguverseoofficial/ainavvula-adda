@@ -52,28 +52,27 @@ def generate_tech_hack():
     """
 
     models_to_try = [
-        "gemini-2.5-flash-lite",
-        "gemini-3-flash-preview",
-        "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash"
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite"
     ]
 
     last_error = None
     for model_name in models_to_try:
-        try:
-            print(f"[1/5] Generating script with {model_name}...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+        for attempt in range(2):
+            try:
+                print(f"[1/5] Generating script with {model_name} (attempt {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
                 )
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Model {model_name} unavailable: {e}")
-            last_error = e
-            time.sleep(2)
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Model {model_name} failed: {e}")
+                last_error = e
+                time.sleep(3)
 
     raise RuntimeError(f"All Gemini models failed: {last_error}")
 
