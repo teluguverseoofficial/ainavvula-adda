@@ -14,7 +14,6 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# Force immediate log output in GitHub Actions
 sys.stdout.reconfigure(line_buffering=True)
 
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
@@ -37,12 +36,12 @@ def generate_tech_hack():
     chosen_angle = random.choice(angles)
 
     prompt = f"""
-    Create a fast-paced 45-second faceless YouTube Short script for a US audience about a {chosen_angle}.
+    Create a fast-paced 40-second faceless YouTube Short script for a US audience about a {chosen_angle}.
     Rules:
     - Start with a shocking hook in the first 3 seconds (no 'Hey guys' or intros).
     - Explain the exact steps clearly so anyone can try it immediately.
     - End with a short question to drive comments.
-    - Keep the spoken script between 95 and 115 words.
+    - STRICT LENGTH: Keep the spoken script between 85 and 100 words so the audio is under 50 seconds.
     
     Return strictly valid JSON with keys:
     "title": catchy title under 55 chars ending with #Shorts,
@@ -82,7 +81,7 @@ async def generate_voice_and_subs(script_text):
     communicate = edge_tts.Communicate(
         script_text,
         "en-US-AndrewNeural",
-        rate="+10%",
+        rate="+12%",
         boundary="WordBoundary"
     )
     submaker = edge_tts.SubMaker()
@@ -96,7 +95,7 @@ async def generate_voice_and_subs(script_text):
 
     srt_content = submaker.get_srt().strip()
     if not srt_content:
-        srt_content = f"1\n00:00:00,000 --> 00:00:45,000\n{script_text}\n"
+        srt_content = f"1\n00:00:00,000 --> 00:00:55,000\n{script_text}\n"
 
     with open("subs.srt", "w", encoding="utf-8") as srt_file:
         srt_file.write(srt_content + "\n")
@@ -125,9 +124,9 @@ def fetch_background_video(keyword):
     with open("bg.mp4", "wb") as f:
         f.write(video_data)
 
-# 4. RENDER 1080x1920 VERTICAL SHORT WITH BURNED-IN CAPTIONS (FFMPEG)
+# 4. RENDER 1080x1920 VERTICAL SHORT (STRICTLY UNDER 58 SECONDS)
 def render_video():
-    print("[4/5] Rendering 1080x1920 video with FFmpeg...")
+    print("[4/5] Rendering 1080x1920 video with FFmpeg (max 58s)...")
     style = (
         "FontName=DejaVu Sans,"
         "FontSize=18,"
@@ -149,8 +148,10 @@ def render_video():
         "-stream_loop", "-1", "-i", "bg.mp4",
         "-i", "voice.mp3",
         "-vf", vf_filter,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "192k",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+        "-c:a", "aac", "-b:a", "128k",
+        "-t", "58",
         "-shortest", "final_short.mp4"
     ]
     subprocess.run(cmd, check=True)
