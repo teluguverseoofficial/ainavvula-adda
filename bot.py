@@ -86,8 +86,62 @@ def fetch_background_video(keyword):
 
 # 4. RENDER 1080x1920 VERTICAL SHORT WITH BURNED-IN CAPTIONS (FFMPEG)
 def render_video():
+    style = (
+        "FontName=DejaVu Sans,"
+        "FontSize=18,"
+        "PrimaryColour=&H0000FFFF,"
+        "OutlineColour=&H00000000,"
+        "BorderStyle=1,"
+        "Outline=2,"
+        "Alignment=10,"
+        "MarginV=120"
+    )
     vf_filter = (
         "scale=1080:1920:force_original_aspect_ratio=increase,"
         "crop=1080:1920,"
         "eq=brightness=-0.08,"
-        "subtitles=subs.srt:force_style='FontName=DejaVu Sans,FontSize
+        f"subtitles=subs.srt:force_style='{style}'"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-stream_loop", "-1", "-i", "bg.mp4",
+        "-i", "voice.mp3",
+        "-vf", vf_filter,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest", "final_short.mp4"
+    ]
+    subprocess.run(cmd, check=True)
+
+# 5. UPLOAD TO YOUTUBE DATA API V3
+def upload_to_youtube(metadata):
+    creds = Credentials.from_authorized_user_file(
+        "token.json", ["https://www.googleapis.com/auth/youtube.upload"]
+    )
+    youtube = build("youtube", "v3", credentials=creds)
+
+    body = {
+        "snippet": {
+            "title": metadata["title"][:100],
+            "description": f"{metadata['description']}\n\n#Shorts #TechHacks #AITools #Productivity",
+            "tags": ["Shorts", "TechHacks", "AI", "ComputerTricks", "Productivity"],
+            "categoryId": "28"
+        },
+        "status": {
+            "privacyStatus": "public",
+            "selfDeclaredMadeForKids": False
+        }
+    }
+
+    media = MediaFileUpload("final_short.mp4", chunksize=-1, resumable=True)
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    response = request.execute()
+    print(f"Uploaded successfully! Video ID: {response['id']}")
+
+if __name__ == "__main__":
+    data = generate_tech_hack()
+    print("Generated Topic:", data["title"])
+    asyncio.run(generate_voice_and_subs(data["script"]))
+    fetch_background_video(data["search_keyword"])
+    render_video()
+    upload_to_youtube(data)
