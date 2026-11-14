@@ -1,0 +1,40 @@
+name: Auto Upload 2 Tech Shorts Daily
+
+on:
+  schedule:
+    # Runs at 13:00 UTC (8:00 AM EST / 6:30 PM IST)
+    - cron: '0 13 * * *'
+    # Runs at 20:00 UTC (3:00 PM EST / 1:30 AM IST)
+    - cron: '0 20 * * *'
+  workflow_dispatch: # Allows you to test-run manually anytime
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Install FFmpeg and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install -r requirements.txt
+
+      - name: Restore YouTube OAuth token
+        run: |
+          cat << 'EOF' > token.json
+          ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          EOF
+
+      - name: Generate and Upload Tech Hack Short
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: python bot.py
