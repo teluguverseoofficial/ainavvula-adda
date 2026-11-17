@@ -2,10 +2,10 @@ name: Auto Upload 2 Tech Shorts Daily
 
 on:
   schedule:
-    # Runs at 13:00 UTC (8:00 AM EST / 6:30 PM IST)
+    # Run 1: 9:00 AM IST (03:30 UTC)
+    - cron: '30 3 * * *'
+    # Run 2: 6:30 PM IST (13:00 UTC)
     - cron: '0 13 * * *'
-    # Runs at 20:00 UTC (3:00 PM EST / 1:30 AM IST)
-    - cron: '0 20 * * *'
   workflow_dispatch: # Allows you to test-run manually anytime
 
 jobs:
@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
