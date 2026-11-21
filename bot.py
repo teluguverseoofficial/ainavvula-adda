@@ -1,359 +1,409 @@
 import asyncio
+import difflib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
 import edge_tts
 from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 sys.stdout.reconfigure(line_buffering=True)
 
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-HISTORY_FILE = "used_scenarios.json"
-FONT_PATH = os.path.expanduser("~/.fonts/Lohit-Telugu.ttf")
+TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.5-flash")
+IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
+HISTORY_FILE = Path("used_scenarios.json")
+OUTPUT_FILE = Path("final_short.mp4")
+SCENE_COUNT = 5
+HISTORY_LIMIT = 200
 
 client = genai.Client(
     api_key=GEMINI_KEY,
-    http_options=types.HttpOptions(timeout=60000),
+    http_options=types.HttpOptions(timeout=180000),
 )
 
 
 def load_used_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception as e:
-            print(f"Could not read {HISTORY_FILE}, starting fresh: {e}", flush=True)
-    return []
+    try:
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
 
 
 def save_used_history(history):
-    trimmed = history[-100:]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(trimmed, f, ensure_ascii=False, indent=2)
+    HISTORY_FILE.write_text(
+        json.dumps(history[-HISTORY_LIMIT:], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
-def _load_telugu_font(size: int):
-    if os.path.exists(FONT_PATH):
-        try:
-            return ImageFont.truetype(FONT_PATH, size=size)
-        except Exception:
-            pass
-    return ImageFont.load_default()
+def normalize(value):
+    value = (value or "").lower()
+    value = re.sub(r"[^\w\s]", " ", value, flags=re.UNICODE)
+    return " ".join(value.split())
 
 
-def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
-    words = text.split()
-    if not words:
-        return []
-    lines = []
-    current = words[0]
-    for word in words[1:]:
-        test = f"{current} {word}"
-        bbox = draw.textbbox((0, 0), test, font=font)
-        if (bbox[2] - bbox[0]) <= max_width:
-            current = test
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
+def similarity(left, right):
+    a, b = normalize(left), normalize(right)
+    if not a or not b:
+        return 0.0
+    sequence_score = difflib.SequenceMatcher(None, a, b).ratio()
+    words_a, words_b = set(a.split()), set(b.split())
+    overlap = len(words_a & words_b) / max(1, len(words_a | words_b))
+    return max(sequence_score, overlap)
 
 
-# 1. GENERATE FRESH TELUGU COMEDY KIT ON FREE TIER (NO SEARCH GROUNDING, NO REPEATS)
-def generate_viral_telugu_comedy_kit():
+def validate_kit(kit):
+    required = ("scenario_key", "title", "description", "characters", "dialogue", "scenes")
+    if not isinstance(kit, dict) or any(not kit.get(key) for key in required):
+        raise ValueError("Gemini returned an incomplete comedy kit.")
+    if len(kit["scenes"]) != SCENE_COUNT:
+        raise ValueError(f"Expected exactly {SCENE_COUNT} scenes.")
+    if not isinstance(kit["dialogue"], list) or len(kit["dialogue"]) < 4:
+        raise ValueError("The script needs at least four dialogue lines.")
+    for scene in kit["scenes"]:
+        if not scene.get("caption") or not scene.get("visual_prompt"):
+            raise ValueError("Every scene needs a caption and visual prompt.")
+    return kit
+
+
+def generate_fresh_telugu_comedy_kit():
     history = load_used_history()
-    recent_topics = [item.get("scenario_key", "") for item in history[-30:] if item.get("scenario_key")]
-    avoid_list = ", ".join(recent_topics) if recent_topics else "None yet"
+    recent = history[-HISTORY_LIMIT:]
+    avoid = [
+        {
+            "scenario_key": item.get("scenario_key", ""),
+            "script": item.get("script", ""),
+        }
+        for item in recent
+    ]
 
     prompt = f"""
-    Create ONE fresh, punchy, relatable Telugu comedy Short script for the YouTube channel "AI Navvula Adda" (Indian/Telugu everyday comedy: office bosses, Telugu parents, friends at a chai stall, traffic excuses, wedding/function drama, or funny everyday twists).
+You are the head comedy writer for the Telugu YouTube Shorts channel "AI Navvula Adda".
+Create ONE genuinely original, laugh-out-loud Telugu comedy skit for Indian/Telugu viewers.
 
-    CRITICAL ANTI-REPEAT RULE:
-    Do NOT pick or repeat any scenario similar to these already-used ones:
-    [{avoid_list}]
+ANTI-REPETITION IS ESSENTIAL:
+Previously used scenario keys and scripts:
+{json.dumps(avoid, ensure_ascii=False)}
+Do not reuse the same premise, conflict, punchline, character situation, or merely change names.
+Choose a fresh everyday premise that is not in the history. Rotate naturally among family,
+friends, workplace, neighbours, school/college, village/town life, shopping, transport,
+technology, food, festivals and social situations.
 
-    Rules for the output:
-    - Write the spoken script in natural, conversational, witty Telugu (everyday spoken Telugu slang, NOT formal news Telugu).
-    - Start with an immediate hook/punchline in the very first sentence.
-    - Keep the spoken script between 55 and 70 words so pacing is fast and punchy.
-    - Provide a short unique "scenario_key" (3-6 words in English summarizing the specific joke) so we never repeat it.
-    - Provide 4 short, punchy beat captions ("scene_captions") in Telugu (2-5 words each) for the 4 comic panels.
+STORY RULES:
+- Natural spoken Telugu, lively and contemporary; no formal/news Telugu.
+- Start with a strong hook in the first spoken line.
+- Build a clear setup, escalation and surprising final punchline.
+- Total spoken dialogue: about 65-90 Telugu words.
+- Use only 2 or 3 recurring characters in this skit.
+- Characters must be ordinary adult Telugu people; keep clothing and appearance consistent.
+- Dialogue speakers must match the character names.
+- Five scenes, each with a clear visual action and comic beat.
+- Image prompts must be detailed photorealistic live-action cinematic descriptions,
+  vertical 9:16 framing, expressive faces, realistic Indian/Telugu locations and clothing.
+- Do not ask the image model to render captions, subtitles, logos or readable text.
+- Avoid stereotypes, political persuasion, real celebrities, copyrighted characters and cruelty.
 
-    Return strictly valid JSON with keys:
-    "scenario_key": "short unique summary of this joke",
-    "title": "catchy Telugu title with a funny hook ending with #Shorts #AINavvulaAdda #TeluguComedy",
-    "description": "2-sentence funny Telugu summary + hashtags",
-    "script": "spoken Telugu comedy text only (no stage directions or asterisks)",
-    "scene_captions": [
-        "Beat 1 Telugu caption",
-        "Beat 2 Telugu caption",
-        "Beat 3 Telugu caption",
-        "Beat 4 Telugu caption"
-    ]
-    """
+Return valid JSON only with exactly these keys:
+{{
+  "scenario_key": "unique short English label for the specific premise",
+  "title": "catchy Telugu title with #Shorts #AINavvulaAdda",
+  "description": "short Telugu description and relevant hashtags",
+  "characters": [
+    {{"name":"name","look":"specific age range, face, hair, build, clothing and visual identity"}}
+  ],
+  "dialogue": [
+    {{"speaker":"character name","text":"one spoken Telugu line"}}
+  ],
+  "scenes": [
+    {{"caption":"short Telugu beat caption","visual_prompt":"photorealistic scene prompt in English, describing visible action and camera framing"}}
+  ]
+}}
+There must be exactly five scene objects. Do not include markdown fences.
+"""
 
-    models_to_try = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
-    last_error = None
+    for attempt in range(6):
+        print(f"[1/5] Writing a fresh Telugu comedy script (attempt {attempt + 1})...")
+        response = client.models.generate_content(
+            model=TEXT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=1.0,
+            ),
+        )
+        kit = validate_kit(json.loads(response.text))
+        full_script = " ".join(line["text"].strip() for line in kit["dialogue"])
+        candidate = f"{kit['scenario_key']} {full_script}"
+        duplicate = False
 
-    for model_name in models_to_try:
-        for attempt in range(2):
-            try:
-                print(
-                    f"[1/5] Generating Telugu comedy script with {model_name} (attempt {attempt + 1})...",
-                    flush=True,
-                )
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=1.0,
-                    ),
-                )
-                kit = json.loads(response.text)
-                scenario_key = kit.get("scenario_key", "").strip()
-                fingerprint = hashlib.sha256(
-                    (scenario_key.lower() + "|" + kit.get("script", "").strip()).encode("utf-8")
-                ).hexdigest()[:16]
+        for old in recent:
+            old_text = f"{old.get('scenario_key', '')} {old.get('script', '')}"
+            if similarity(candidate, old_text) >= 0.72:
+                duplicate = True
+                break
 
-                if any(entry.get("hash") == fingerprint for entry in history):
-                    print("Duplicate scenario hash detected, retrying for a fresh angle...", flush=True)
-                    continue
+        if duplicate:
+            print("A similar premise was found in history; asking for a different story.")
+            prompt += "\nIMPORTANT: Your previous attempt was too similar. Choose a completely different premise and punchline."
+            continue
 
-                history.append({
-                    "hash": fingerprint,
-                    "scenario_key": scenario_key,
-                    "title": kit.get("title", ""),
-                })
-                save_used_history(history)
-                return kit
-            except Exception as e:
-                print(f"Model {model_name} failed: {e}", flush=True)
-                last_error = e
-                sleep_sec = 10 if "429" in str(e) else 3
-                time.sleep(sleep_sec)
+        kit["script"] = full_script
+        fingerprint = hashlib.sha256(normalize(candidate).encode("utf-8")).hexdigest()
+        history.append({
+            "hash": fingerprint,
+            "scenario_key": kit["scenario_key"],
+            "script": full_script,
+            "title": kit["title"],
+        })
+        save_used_history(history)
+        return kit
 
-    raise RuntimeError(f"All Gemini models failed to generate a unique skit: {last_error}")
-
-
-# 2. GENERATE EXPRESSIVE TELUGU VOICEOVER + SUBTITLES
-async def generate_voice_and_subs(script_text):
-    print("[2/5] Generating energetic Telugu comedy voiceover...", flush=True)
-    clean_text = script_text.replace("*", "").replace("#", "").replace('"', "").strip()
-
-    for attempt in range(3):
-        try:
-            communicate = edge_tts.Communicate(
-                clean_text,
-                "te-IN-MohanNeural",
-                rate="+8%",
-                pitch="+2Hz",
-                boundary="SentenceBoundary",
-            )
-            submaker = edge_tts.SubMaker()
-
-            with open("voice.mp3", "wb") as audio_file:
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        audio_file.write(chunk["data"])
-                    elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
-                        submaker.feed(chunk)
-
-            srt_content = submaker.get_srt().strip()
-            if not srt_content:
-                srt_content = f"1\n00:00:00,000 --> 00:00:35,000\n{clean_text}\n"
-
-            with open("subs.srt", "w", encoding="utf-8") as srt_file:
-                srt_file.write(srt_content + "\n")
-            print("Voiceover and Telugu subtitles saved.", flush=True)
-            return
-        except Exception as e:
-            print(f"TTS attempt {attempt + 1} failed: {e}", flush=True)
-            time.sleep(3)
-
-    raise RuntimeError("Edge TTS failed after 3 attempts.")
+    raise RuntimeError("Could not generate a sufficiently different comedy skit after six attempts.")
 
 
-# 3. GENERATE 4 VIBRANT COMIC SCENE CARDS LOCALLY (ZERO IMAGE API QUOTA NEEDED)
-def generate_comic_scenes(scene_captions, scenario_key=""):
-    print("[3/5] Generating 4 colorful Telugu comic scene cards locally...", flush=True)
-    image_files = []
-
-    palettes = [
-        ((24, 34, 79), (255, 193, 7), (255, 87, 34)),
-        ((15, 76, 92), (0, 229, 255), (255, 214, 0)),
-        ((74, 20, 140), (255, 64, 129), (255, 235, 59)),
-        ((27, 94, 32), (178, 255, 89), (255, 171, 0)),
-    ]
-
-    header_font = _load_telugu_font(44)
-    caption_font = _load_telugu_font(68)
-    badge_font = _load_telugu_font(34)
-
-    for idx in range(4):
-        caption = scene_captions[idx] if idx < len(scene_captions) else f"సీన్ {idx + 1}"
-        bg_top, accent_primary, accent_secondary = palettes[idx % len(palettes)]
-        filename = f"scene_{idx}.png"
-
-        img = Image.new("RGB", (1080, 1920), bg_top)
-        draw = ImageDraw.Draw(img)
-
-        # Geometric comic burst & accent bands
-        draw.polygon([(0, 0), (1080, 0), (1080, 520), (0, 740)], fill=accent_primary)
-        draw.polygon([(0, 1360), (1080, 1150), (1080, 1920), (0, 1920)], fill=accent_secondary)
-        draw.ellipse([(240, 560), (840, 1160)], fill=(20, 24, 48), outline=(255, 255, 255), width=8)
-
-        # Channel header
-        draw.text((60, 65), "AI Navvula Adda", fill=(15, 20, 40), font=header_font)
-        draw.text((60, 125), f"SCENE {idx + 1} / 4", fill=(255, 255, 255), font=badge_font)
-
-        # Center comic beat caption
-        wrapped = _wrap_text(draw, caption, caption_font, max_width=520)
-        line_height = 84
-        start_y = 860 - (len(wrapped) * line_height) // 2
-        for line_idx, line in enumerate(wrapped):
-            bbox = draw.textbbox((0, 0), line, font=caption_font)
-            text_w = bbox[2] - bbox[0]
-            x = (1080 - text_w) // 2
-            y = start_y + line_idx * line_height
-            draw.text((x + 3, y + 3), line, fill=(0, 0, 0), font=caption_font)
-            draw.text((x, y), line, fill=(255, 255, 255), font=caption_font)
-
-        img.save(filename, format="PNG")
-        image_files.append(filename)
-        print(f"Saved {filename}", flush=True)
-
-    return image_files
+def srt_timestamp(seconds):
+    milliseconds = max(0, int(round(seconds * 1000)))
+    hours, milliseconds = divmod(milliseconds, 3_600_000)
+    minutes, milliseconds = divmod(milliseconds, 60_000)
+    seconds_part, milliseconds = divmod(milliseconds, 1000)
+    return f"{hours:02}:{minutes:02}:{seconds_part:02},{milliseconds:03}"
 
 
-# 4. STITCH SCENES WITH ZOOM MOTION + BURN TELUGU SUBTITLES
-def render_comedy_short(image_files):
-    print("[4/5] Rendering 1080x1920 animated comic reel with FFmpeg...", flush=True)
-
-    probe = subprocess.run(
+def media_duration(filename):
+    result = subprocess.run(
         [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            "voice.mp3",
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(filename),
         ],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True, check=True,
+    )
+    return float(result.stdout.strip())
+
+
+async def generate_voice_and_subtitles(dialogue):
+    print("[2/5] Creating Telugu character dialogue and timed subtitles...")
+    voice_map = {"male": "te-IN-MohanNeural", "female": "te-IN-ShrutiNeural"}
+    character_voice = {}
+    audio_files = []
+    subtitle_entries = []
+    cursor = 0.0
+
+    for index, line in enumerate(dialogue):
+        speaker = line["speaker"].strip()
+        voice = character_voice.setdefault(
+            speaker,
+            voice_map["male"] if len(character_voice) % 2 == 0 else voice_map["female"],
+        )
+        text = line["text"].strip()
+        filename = Path(f"dialogue_{index:02}.mp3")
+        communicate = edge_tts.Communicate(text, voice, rate="+5%", pitch="+1Hz")
+        await communicate.save(str(filename))
+        duration = media_duration(filename)
+        audio_files.append(filename)
+        subtitle_entries.append(
+            f"{index + 1}\n{srt_timestamp(cursor)} --> {srt_timestamp(cursor + duration)}\n{text}\n"
+        )
+        cursor += duration
+        time.sleep(0.15)
+
+    concat_file = Path("audio_concat.txt")
+    concat_file.write_text(
+        "".join(f"file '{path.resolve()}'\n" for path in audio_files),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+            "-i", str(concat_file), "-c:a", "libmp3lame", "-q:a", "3", "voice.mp3",
+        ],
         check=True,
     )
-    total_duration = float(probe.stdout.strip()) + 0.5
-    clip_duration = total_duration / len(image_files)
-    frames_per_clip = max(1, int(clip_duration * 30))
+    Path("subs.srt").write_text("\n".join(subtitle_entries), encoding="utf-8")
+    return media_duration("voice.mp3")
 
+
+def generate_realistic_scenes(kit):
+    print(f"[3/5] Generating {SCENE_COUNT} photorealistic Telugu comedy scenes...")
+    character_bible = "\n".join(
+        f"{character['name']}: {character['look']}" for character in kit["characters"]
+    )
+    images = []
+    character_reference = None
+    previous_scene = None
+
+    for index, scene in enumerate(kit["scenes"]):
+        prompt = f"""
+Create one photorealistic live-action cinematic frame for a Telugu comedy short.
+Vertical portrait 9:16 composition, realistic skin texture, expressive natural faces,
+authentic South Indian/Telugu setting, cinematic lighting, detailed background.
+Keep all recurring characters visually identical to the supplied reference image(s).
+CHARACTER CONTINUITY GUIDE:
+{character_bible}
+SCENE {index + 1} OF {SCENE_COUNT}:
+{scene['visual_prompt']}
+The scene should communicate the comic action through facial expressions and body language.
+No text, no captions, no watermark, no logos, no collage, no split panels.
+"""
+        contents = [prompt]
+        if character_reference is not None:
+            contents.append(character_reference)
+        if previous_scene is not None and previous_scene is not character_reference:
+            contents.append(previous_scene)
+
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=IMAGE_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=types.ImageConfig(aspect_ratio="9:16"),
+                    ),
+                )
+                image_part = next(
+                    (part for part in response.parts if getattr(part, "inline_data", None)),
+                    None,
+                )
+                if image_part is None:
+                    raise RuntimeError("Image model returned no image.")
+                image = image_part.as_image()
+                filename = Path(f"scene_{index:02}.png")
+                image.save(filename)
+                images.append(filename)
+                if character_reference is None:
+                    character_reference = Image.open(filename).copy()
+                previous_scene = Image.open(filename).copy()
+                print(f"Generated {filename.name}: {scene['caption']}")
+                break
+            except Exception as error:
+                last_error = error
+                print(f"Scene {index + 1} image attempt {attempt + 1} failed: {error}")
+                time.sleep(4)
+        else:
+            raise RuntimeError(f"Could not generate scene {index + 1}: {last_error}")
+
+    return images
+
+
+def render_comedy_short(image_files, total_duration):
+    print("[4/5] Rendering the vertical 1080x1920 Telugu comedy Short...")
+    clip_duration = total_duration / len(image_files)
+    frames_per_clip = max(1, round(clip_duration * 30))
     clip_paths = []
-    for idx, img in enumerate(image_files):
-        clip_name = f"clip_{idx}.mp4"
+
+    for index, image_path in enumerate(image_files):
+        clip_name = Path(f"clip_{index:02}.mp4")
         zoom_filter = (
-            f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-            f"zoompan=z='min(zoom+0.0015,1.15)':d={frames_per_clip}:s=1080x1920:fps=30"
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,"
+            f"zoompan=z='min(zoom+0.0012,1.12)':d={frames_per_clip}:"
+            "s=1080x1920:fps=30,format=yuv420p"
         )
         subprocess.run(
             [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-loop", "1", "-i", img,
-                "-vf", zoom_filter,
-                "-t", str(clip_duration),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                clip_name,
+                "ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-i", str(image_path),
+                "-vf", zoom_filter, "-t", f"{clip_duration:.3f}",
+                "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                str(clip_name),
             ],
             check=True,
         )
         clip_paths.append(clip_name)
 
-    with open("concat.txt", "w", encoding="utf-8") as f:
-        for c in clip_paths:
-            f.write(f"file '{c}'\n")
-
+    Path("video_concat.txt").write_text(
+        "".join(f"file '{path.resolve()}'\n" for path in clip_paths),
+        encoding="utf-8",
+    )
     subprocess.run(
         [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", "concat.txt",
-            "-c", "copy", "stitched_video.mp4",
+            "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+            "-i", "video_concat.txt", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "20", "-pix_fmt", "yuv420p", "stitched_video.mp4",
         ],
         check=True,
     )
 
     font_dir = os.path.expanduser("~/.fonts")
-    style = (
-        "FontName=Lohit Telugu,"
-        "FontSize=22,"
-        "PrimaryColour=&H0000FFFF,"
-        "OutlineColour=&H00000000,"
-        "BackColour=&H80000000,"
-        "BorderStyle=4,"
-        "Outline=2,"
-        "Alignment=2,"
-        "MarginV=240"
+    subtitle_style = (
+        "FontName=Lohit Telugu,FontSize=20,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00101010,BackColour=&H80000000,BorderStyle=3,"
+        "Outline=2,Shadow=1,Alignment=2,MarginV=170"
     )
-
+    subtitle_filter = f"subtitles=subs.srt:fontsdir={font_dir}:force_style='{subtitle_style}'"
     subprocess.run(
         [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", "stitched_video.mp4",
-            "-i", "voice.mp3",
-            "-vf", f"subtitles=subs.srt:fontsdir={font_dir}:force_style='{style}'",
+            "ffmpeg", "-y", "-loglevel", "error", "-i", "stitched_video.mp4",
+            "-i", "voice.mp3", "-vf", subtitle_filter,
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-            "-c:a", "aac", "-b:a", "192k",
-            "-shortest", "final_short.mp4",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "19",
+            "-c:a", "aac", "-b:a", "160k", "-shortest", str(OUTPUT_FILE),
         ],
         check=True,
     )
+    if not OUTPUT_FILE.exists() or OUTPUT_FILE.stat().st_size < 100_000:
+        raise RuntimeError("Rendered video is missing or unexpectedly small.")
+    print(f"Rendered {OUTPUT_FILE} ({OUTPUT_FILE.stat().st_size:,} bytes).")
 
 
-# 5. UPLOAD ONE VIDEO TO YOUTUBE WITH QUOTA SAFETY & TELUGU LANGUAGE TAGS
 def upload_to_youtube(metadata):
-    print("[5/5] Uploading single Telugu comedy short to YouTube...", flush=True)
-    creds = Credentials.from_authorized_user_file(
-        "token.json", ["https://www.googleapis.com/auth/youtube.upload"]
-    )
-    youtube = build("youtube", "v3", credentials=creds)
+    print("[5/5] Uploading the sample Telugu comedy Short to YouTube...")
+    token_path = Path("token.json")
+    if not token_path.exists():
+        raise FileNotFoundError("token.json was not created; check YOUTUBE_TOKEN_JSON secret.")
 
+    credentials = Credentials.from_authorized_user_file(
+        str(token_path), ["https://www.googleapis.com/auth/youtube.upload"]
+    )
+    youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
     body = {
         "snippet": {
             "title": metadata["title"][:100],
-            "description": f"{metadata['description']}\n\n#AINavvulaAdda #TeluguComedy #AIComedy #TeluguShorts #FunnyVideos",
-            "tags": ["AINavvulaAdda", "TeluguComedy", "AIComedy", "TeluguShorts", "FunnyTelugu", "Shorts"],
+            "description": (
+                f"{metadata['description']}\n\n"
+                "#AINavvulaAdda #TeluguComedy #AIComedy #TeluguShorts #FunnyVideos"
+            ),
+            "tags": [
+                "AINavvulaAdda", "TeluguComedy", "AIComedy", "TeluguShorts",
+                "FunnyTelugu", "TeluguFunnyVideos", "Shorts",
+            ],
             "categoryId": "23",
             "defaultLanguage": "te",
             "defaultAudioLanguage": "te",
         },
         "status": {
-            "privacyStatus": "public",
+            "privacyStatus": os.getenv("YOUTUBE_PRIVACY_STATUS", "public"),
             "selfDeclaredMadeForKids": False,
         },
     }
+    media = MediaFileUpload(str(OUTPUT_FILE), mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True)
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    response = request.execute()
+    print(f"YOUTUBE_UPLOAD_SUCCESS video_id={response['id']}")
+    print(f"https://www.youtube.com/watch?v={response['id']}")
 
-    try:
-        media = MediaFileUpload("final_short.mp4", chunksize=-1, resumable=True)
-        request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-        response = request.execute()
-        print(f"Uploaded successfully! Video ID: {response['id']}", flush=True)
-    except Exception as e:
-        print(f"Upload skipped/limited by YouTube quota: {e}", flush=True)
+
+def main():
+    kit = generate_fresh_telugu_comedy_kit()
+    print(f"Today's premise: {kit['scenario_key']}")
+    print(f"Title: {kit['title']}")
+    total_duration = asyncio.run(generate_voice_and_subtitles(kit["dialogue"]))
+    images = generate_realistic_scenes(kit)
+    render_comedy_short(images, total_duration)
+    upload_to_youtube(kit)
 
 
 if __name__ == "__main__":
-    kit = generate_viral_telugu_comedy_kit()
-    print(f"Viral Scenario: {kit.get('scenario_key', '')}", flush=True)
-    print(f"Generated Comedy Title: {kit['title']}", flush=True)
-    asyncio.run(generate_voice_and_subs(kit["script"]))
-    scenes = generate_comic_scenes(kit.get("scene_captions", []), kit.get("scenario_key", ""))
-    render_comedy_short(scenes)
-    upload_to_youtube(kit)
+    main()
