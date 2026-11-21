@@ -89,7 +89,7 @@ def generate_fresh_telugu_comedy_kit():
         for item in recent
     ]
 
-    base_prompt = f"""
+    prompt = f"""
 You are the head comedy writer for the Telugu YouTube Shorts channel "AI Navvula Adda".
 Create ONE genuinely original, laugh-out-loud Telugu comedy skit for Indian/Telugu viewers.
 
@@ -133,7 +133,6 @@ Return valid JSON only with exactly these keys:
 There must be exactly five scene objects. Do not include markdown fences.
 """
 
-    prompt = base_prompt
     models_to_try = [TEXT_MODEL, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
     deduped_models = []
     for m in models_to_try:
@@ -248,6 +247,21 @@ async def generate_voice_and_subtitles(dialogue):
     return media_duration("voice.mp3")
 
 
+def _load_telugu_font(size: int):
+    for font_candidate in [
+        os.path.expanduser("~/.fonts/Lohit-Telugu.ttf"),
+        "/usr/share/fonts/truetype/lohit-telugu/Lohit-Telugu.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf",
+    ]:
+        if os.path.exists(font_candidate):
+            try:
+                return ImageFont.truetype(font_candidate, size=size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
 def _render_fallback_scene(filename: Path, index: int, caption: str):
     palettes = [
         ((24, 34, 79), (255, 193, 7), (255, 87, 34)),
@@ -261,22 +275,11 @@ def _render_fallback_scene(filename: Path, index: int, caption: str):
     draw = ImageDraw.Draw(img)
     draw.polygon([(0, 0), (1080, 0), (1080, 500), (0, 720)], fill=accent_a)
     draw.polygon([(0, 1380), (1080, 1160), (1080, 1920), (0, 1920)], fill=accent_b)
-    draw.ellipse([(240, 580), (840, 1180)], fill=(20, 24, 48), outline=(255, 255, 255), width=8)
+    draw.ellipse([(220, 560), (860, 1200)], fill=(20, 24, 48), outline=(255, 255, 255), width=8)
 
-    font = None
-    for font_candidate in [
-        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Bold.ttf",
-        "/usr/share/fonts/truetype/lohit-telugu/Lohit-Telugu.ttf",
-        os.path.expanduser("~/.fonts/Lohit-Telugu.ttf"),
-    ]:
-        if os.path.exists(font_candidate):
-            try:
-                font = ImageFont.truetype(font_candidate, size=54)
-                break
-            except Exception:
-                pass
-    if font is None:
-        font = ImageFont.load_default()
+    header_font = _load_telugu_font(42)
+    font = _load_telugu_font(56)
+    draw.text((60, 65), "AI Navvula Adda", fill=(15, 20, 40), font=header_font)
 
     words = caption.split()
     lines = []
@@ -284,7 +287,7 @@ def _render_fallback_scene(filename: Path, index: int, caption: str):
     for w in words:
         test = f"{cur} {w}".strip()
         bbox = draw.textbbox((0, 0), test, font=font)
-        if (bbox[2] - bbox[0]) <= 500:
+        if (bbox[2] - bbox[0]) <= 540:
             cur = test
         else:
             if cur:
@@ -293,11 +296,11 @@ def _render_fallback_scene(filename: Path, index: int, caption: str):
     if cur:
         lines.append(cur)
 
-    start_y = 880 - (len(lines) * 70) // 2
+    start_y = 880 - (len(lines) * 72) // 2
     for i, line in enumerate(lines):
         bbox = draw.textbbox((0, 0), line, font=font)
         x = (1080 - (bbox[2] - bbox[0])) // 2
-        y = start_y + i * 70
+        y = start_y + i * 72
         draw.text((x + 3, y + 3), line, fill=(0, 0, 0), font=font)
         draw.text((x, y), line, fill=(255, 255, 255), font=font)
 
@@ -305,20 +308,25 @@ def _render_fallback_scene(filename: Path, index: int, caption: str):
 
 
 def generate_realistic_scenes(kit):
-    print(f"[3/5] Generating {SCENE_COUNT} photorealistic Telugu comedy scenes...")
+    print(f"[3/5] Generating {SCENE_COUNT} Telugu comedy scenes...")
     character_bible = "\n".join(
         f"{character['name']}: {character['look']}" for character in kit["characters"]
     )
     images = []
     character_reference = None
     previous_scene = None
+    image_quota_exhausted = False
 
     for index, scene in enumerate(kit["scenes"]):
         filename = Path(f"scene_{index:02}.png")
+        if image_quota_exhausted:
+            _render_fallback_scene(filename, index, scene["caption"])
+            images.append(filename)
+            print(f"Generated local comic scene {filename.name}: {scene['caption']}")
+            continue
+
         prompt = f"""
 Create one photorealistic live-action cinematic frame for a Telugu comedy short.
-IMPORTANT: Show the actual human characters as people, not icons, silhouettes,
-illustrations, typography, abstract shapes, posters, or text-only graphics.
 Vertical portrait 9:16 composition, realistic skin texture, expressive natural faces,
 authentic South Indian/Telugu setting, cinematic lighting, detailed background.
 Keep all recurring characters visually identical to the supplied reference image(s).
@@ -335,7 +343,6 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
         if previous_scene is not None and previous_scene is not character_reference:
             contents.append(previous_scene)
 
-        last_error = None
         for attempt in range(2):
             try:
                 response = client.models.generate_content(
@@ -351,35 +358,29 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
                     None,
                 )
                 if image_part is None:
-                    raise RuntimeError("Image model returned no image data.")
+                    raise RuntimeError("Image model returned no image.")
                 image = image_part.as_image()
                 image.save(filename)
+                images.append(filename)
                 if character_reference is None:
                     character_reference = Image.open(filename).copy()
                 previous_scene = Image.open(filename).copy()
-                images.append(filename)
-                print(f"Generated photorealistic human scene {index + 1}/{SCENE_COUNT}: {scene['caption']}")
+                print(f"Generated {filename.name}: {scene['caption']}")
                 break
             except Exception as error:
-                last_error = error
-                error_text = str(error)
-                print(f"Scene {index + 1} image attempt {attempt + 1} failed: {error_text}")
-                if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text or "quota" in error_text.lower():
-                    raise RuntimeError(
-                        "Gemini image generation quota is unavailable. No video was uploaded. "
-                        "Enable billing for the Google Cloud project linked to GEMINI_API_KEY "
-                        "and confirm that the selected image model has quota, then rerun."
-                    ) from error
-                if attempt == 0:
-                    time.sleep(3)
+                print(f"Scene {index + 1} image attempt {attempt + 1} failed: {error}")
+                if "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error):
+                    image_quota_exhausted = True
+                    break
+                time.sleep(3)
+        else:
+            image_quota_exhausted = True
 
-        if len(images) != index + 1:
-            raise RuntimeError(
-                f"Could not generate real human-character artwork for scene {index + 1}: {last_error}"
-            )
+        if len(images) <= index:
+            _render_fallback_scene(filename, index, scene["caption"])
+            images.append(filename)
+            print(f"Generated local comic scene {filename.name}: {scene['caption']}")
 
-    if len(images) != SCENE_COUNT:
-        raise RuntimeError(f"Expected {SCENE_COUNT} real generated images, got {len(images)}.")
     return images
 
 
@@ -421,9 +422,9 @@ def render_comedy_short(image_files, total_duration):
         check=True,
     )
 
-    font_dir = "/usr/share/fonts/truetype/noto"
+    font_dir = os.path.expanduser("~/.fonts")
     subtitle_style = (
-        "FontName=Noto Sans Telugu,FontSize=20,PrimaryColour=&H00FFFFFF,"
+        "FontName=Lohit Telugu,FontSize=20,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00101010,BackColour=&H80000000,BorderStyle=3,"
         "Outline=2,Shadow=1,Alignment=2,MarginV=170"
     )
