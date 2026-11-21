@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from PIL import Image
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -19,7 +21,7 @@ HISTORY_FILE = "used_scenarios.json"
 
 client = genai.Client(
     api_key=GEMINI_KEY,
-    http_options=types.HttpOptions(timeout=60000)
+    http_options=types.HttpOptions(timeout=90000),
 )
 
 
@@ -75,7 +77,7 @@ def generate_viral_telugu_comedy_kit():
     ]
     """
 
-    models_to_try = ["gemini-3.8-flash", "gemini-3.8-pro"]
+    models_to_try = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
     last_error = None
 
     for model_name in models_to_try:
@@ -113,7 +115,8 @@ def generate_viral_telugu_comedy_kit():
             except Exception as e:
                 print(f"Model {model_name} failed: {e}", flush=True)
                 last_error = e
-                time.sleep(3)
+                backoff = 8 if "429" in str(e) else 3
+                time.sleep(backoff)
 
     raise RuntimeError(f"All Gemini models failed to generate a unique viral skit: {last_error}")
 
@@ -156,10 +159,25 @@ async def generate_voice_and_subs(script_text):
     raise RuntimeError("Edge TTS failed after 3 attempts.")
 
 
-# 3. GENERATE 4 CUSTOM 3D COMIC SCENES USING IMAGEN
+def _save_part_as_9x16_png(part, filename):
+    inline_data = getattr(part, "inline_data", None)
+    if inline_data and getattr(inline_data, "data", None):
+        raw_bytes = inline_data.data
+        if isinstance(raw_bytes, str):
+            import base64
+            raw_bytes = base64.b64decode(raw_bytes)
+        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        img = img.resize((1080, 1920), Image.Resampling.LANCZOS)
+        img.save(filename, format="PNG")
+        return True
+    return False
+
+
+# 3. GENERATE 4 CUSTOM 3D COMIC SCENES USING GEMINI IMAGE MODELS
 def generate_comic_scenes(scene_prompts):
     print("[3/5] Generating 4 custom AI comic scenes...", flush=True)
     image_files = []
+    image_models = ["gemini-2.5-flash-image", "gemini-3.1-flash-image"]
 
     for idx, prompt_text in enumerate(scene_prompts[:4]):
         full_prompt = (
@@ -167,22 +185,36 @@ def generate_comic_scenes(scene_prompts):
             f"vertical 9:16 composition, high detail 3D render"
         )
         filename = f"scene_{idx}.png"
-        try:
-            result = client.models.generate_images(
-                model="imagen-3.0-generate-002",
-                prompt=full_prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    output_mime_type="image/png",
-                    aspect_ratio="9:16",
-                ),
-            )
-            for generated_image in result.generated_images:
-                generated_image.image.save(filename)
-            image_files.append(filename)
-            print(f"Saved {filename}", flush=True)
-        except Exception as e:
-            print(f"Imagen failed on scene {idx}: {e}", flush=True)
+        saved = False
+
+        for img_model in image_models:
+            try:
+                response = client.models.generate_content(
+                    model=img_model,
+                    contents=full_prompt,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                    ),
+                )
+                candidates = getattr(response, "candidates", None) or []
+                for cand in candidates:
+                    content = getattr(cand, "content", None)
+                    parts = getattr(content, "parts", None) or []
+                    for part in parts:
+                        if _save_part_as_9x16_png(part, filename):
+                            saved = True
+                            break
+                    if saved:
+                        break
+                if saved:
+                    image_files.append(filename)
+                    print(f"Saved {filename} using {img_model}", flush=True)
+                    break
+            except Exception as e:
+                print(f"Image model {img_model} failed on scene {idx}: {e}", flush=True)
+                time.sleep(2)
+
+        if not saved:
             subprocess.run(
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
@@ -192,6 +224,7 @@ def generate_comic_scenes(scene_prompts):
                 check=True,
             )
             image_files.append(filename)
+            print(f"Saved fallback frame {filename}", flush=True)
 
     return image_files
 
