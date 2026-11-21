@@ -15,12 +15,12 @@ from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 sys.stdout.reconfigure(line_buffering=True)
 
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite")
 IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 HISTORY_FILE = Path("used_scenarios.json")
 OUTPUT_FILE = Path("final_short.mp4")
@@ -89,7 +89,7 @@ def generate_fresh_telugu_comedy_kit():
         for item in recent
     ]
 
-    prompt = f"""
+    base_prompt = f"""
 You are the head comedy writer for the Telugu YouTube Shorts channel "AI Navvula Adda".
 Create ONE genuinely original, laugh-out-loud Telugu comedy skit for Indian/Telugu viewers.
 
@@ -133,44 +133,58 @@ Return valid JSON only with exactly these keys:
 There must be exactly five scene objects. Do not include markdown fences.
 """
 
+    prompt = base_prompt
+    models_to_try = [TEXT_MODEL, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+    deduped_models = []
+    for m in models_to_try:
+        if m and m not in deduped_models:
+            deduped_models.append(m)
+
+    last_error = None
     for attempt in range(6):
-        print(f"[1/5] Writing a fresh Telugu comedy script (attempt {attempt + 1})...")
-        response = client.models.generate_content(
-            model=TEXT_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=1.0,
-            ),
-        )
-        kit = validate_kit(json.loads(response.text))
-        full_script = " ".join(line["text"].strip() for line in kit["dialogue"])
-        candidate = f"{kit['scenario_key']} {full_script}"
-        duplicate = False
+        model_name = deduped_models[min(attempt // 2, len(deduped_models) - 1)]
+        print(f"[1/5] Writing a fresh Telugu comedy script with {model_name} (attempt {attempt + 1})...")
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=1.0,
+                ),
+            )
+            kit = validate_kit(json.loads(response.text))
+            full_script = " ".join(line["text"].strip() for line in kit["dialogue"])
+            candidate = f"{kit['scenario_key']} {full_script}"
+            duplicate = False
 
-        for old in recent:
-            old_text = f"{old.get('scenario_key', '')} {old.get('script', '')}"
-            if similarity(candidate, old_text) >= 0.72:
-                duplicate = True
-                break
+            for old in recent:
+                old_text = f"{old.get('scenario_key', '')} {old.get('script', '')}"
+                if similarity(candidate, old_text) >= 0.72:
+                    duplicate = True
+                    break
 
-        if duplicate:
-            print("A similar premise was found in history; asking for a different story.")
-            prompt += "\nIMPORTANT: Your previous attempt was too similar. Choose a completely different premise and punchline."
-            continue
+            if duplicate:
+                print("A similar premise was found in history; asking for a different story.")
+                prompt += "\nIMPORTANT: Your previous attempt was too similar. Choose a completely different premise and punchline."
+                continue
 
-        kit["script"] = full_script
-        fingerprint = hashlib.sha256(normalize(candidate).encode("utf-8")).hexdigest()
-        history.append({
-            "hash": fingerprint,
-            "scenario_key": kit["scenario_key"],
-            "script": full_script,
-            "title": kit["title"],
-        })
-        save_used_history(history)
-        return kit
+            kit["script"] = full_script
+            fingerprint = hashlib.sha256(normalize(candidate).encode("utf-8")).hexdigest()
+            history.append({
+                "hash": fingerprint,
+                "scenario_key": kit["scenario_key"],
+                "script": full_script,
+                "title": kit["title"],
+            })
+            save_used_history(history)
+            return kit
+        except Exception as error:
+            last_error = error
+            print(f"Script attempt {attempt + 1} ({model_name}) failed: {error}")
+            time.sleep(6 if "429" in str(error) else 2)
 
-    raise RuntimeError("Could not generate a sufficiently different comedy skit after six attempts.")
+    raise RuntimeError(f"Could not generate a sufficiently different comedy skit after six attempts: {last_error}")
 
 
 def srt_timestamp(seconds):
@@ -234,16 +248,80 @@ async def generate_voice_and_subtitles(dialogue):
     return media_duration("voice.mp3")
 
 
+def _render_fallback_scene(filename: Path, index: int, caption: str):
+    palettes = [
+        ((24, 34, 79), (255, 193, 7), (255, 87, 34)),
+        ((15, 76, 92), (0, 229, 255), (255, 214, 0)),
+        ((74, 20, 140), (255, 64, 129), (255, 235, 59)),
+        ((27, 94, 32), (178, 255, 89), (255, 171, 0)),
+        ((106, 27, 154), (255, 110, 64), (0, 230, 118)),
+    ]
+    bg_top, accent_a, accent_b = palettes[index % len(palettes)]
+    img = Image.new("RGB", (1080, 1920), bg_top)
+    draw = ImageDraw.Draw(img)
+    draw.polygon([(0, 0), (1080, 0), (1080, 500), (0, 720)], fill=accent_a)
+    draw.polygon([(0, 1380), (1080, 1160), (1080, 1920), (0, 1920)], fill=accent_b)
+    draw.ellipse([(240, 580), (840, 1180)], fill=(20, 24, 48), outline=(255, 255, 255), width=8)
+
+    font = None
+    for font_candidate in [
+        "/usr/share/fonts/truetype/noto/NotoSansTelugu-Bold.ttf",
+        "/usr/share/fonts/truetype/lohit-telugu/Lohit-Telugu.ttf",
+        os.path.expanduser("~/.fonts/Lohit-Telugu.ttf"),
+    ]:
+        if os.path.exists(font_candidate):
+            try:
+                font = ImageFont.truetype(font_candidate, size=54)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    words = caption.split()
+    lines = []
+    cur = ""
+    for w in words:
+        test = f"{cur} {w}".strip()
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if (bbox[2] - bbox[0]) <= 500:
+            cur = test
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+
+    start_y = 880 - (len(lines) * 70) // 2
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        x = (1080 - (bbox[2] - bbox[0])) // 2
+        y = start_y + i * 70
+        draw.text((x + 3, y + 3), line, fill=(0, 0, 0), font=font)
+        draw.text((x, y), line, fill=(255, 255, 255), font=font)
+
+    img.save(filename)
+
+
 def generate_realistic_scenes(kit):
-    print(f"[3/5] Generating {SCENE_COUNT} photorealistic Telugu comedy scenes...")
+    print(f"[3/5] Generating {SCENE_COUNT} Telugu comedy scenes...")
     character_bible = "\n".join(
         f"{character['name']}: {character['look']}" for character in kit["characters"]
     )
     images = []
     character_reference = None
     previous_scene = None
+    image_quota_exhausted = False
 
     for index, scene in enumerate(kit["scenes"]):
+        filename = Path(f"scene_{index:02}.png")
+        if image_quota_exhausted:
+            _render_fallback_scene(filename, index, scene["caption"])
+            images.append(filename)
+            print(f"Generated fallback {filename.name}: {scene['caption']}")
+            continue
+
         prompt = f"""
 Create one photorealistic live-action cinematic frame for a Telugu comedy short.
 Vertical portrait 9:16 composition, realistic skin texture, expressive natural faces,
@@ -262,8 +340,7 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
         if previous_scene is not None and previous_scene is not character_reference:
             contents.append(previous_scene)
 
-        last_error = None
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = client.models.generate_content(
                     model=IMAGE_MODEL,
@@ -280,7 +357,6 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
                 if image_part is None:
                     raise RuntimeError("Image model returned no image.")
                 image = image_part.as_image()
-                filename = Path(f"scene_{index:02}.png")
                 image.save(filename)
                 images.append(filename)
                 if character_reference is None:
@@ -289,11 +365,18 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
                 print(f"Generated {filename.name}: {scene['caption']}")
                 break
             except Exception as error:
-                last_error = error
                 print(f"Scene {index + 1} image attempt {attempt + 1} failed: {error}")
-                time.sleep(4)
+                if "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error):
+                    image_quota_exhausted = True
+                    break
+                time.sleep(3)
         else:
-            raise RuntimeError(f"Could not generate scene {index + 1}: {last_error}")
+            image_quota_exhausted = True
+
+        if len(images) <= index:
+            _render_fallback_scene(filename, index, scene["caption"])
+            images.append(filename)
+            print(f"Generated fallback {filename.name}: {scene['caption']}")
 
     return images
 
