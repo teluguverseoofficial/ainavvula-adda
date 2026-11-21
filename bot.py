@@ -20,7 +20,7 @@ from PIL import Image
 sys.stdout.reconfigure(line_buffering=True)
 
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.5-flash")
+TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
 IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 HISTORY_FILE = Path("used_scenarios.json")
 OUTPUT_FILE = Path("final_short.mp4")
@@ -269,7 +269,7 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
                     model=IMAGE_MODEL,
                     contents=contents,
                     config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
+                        response_modalities=["TEXT", "IMAGE"],
                         image_config=types.ImageConfig(aspect_ratio="9:16"),
                     ),
                 )
