@@ -336,9 +336,9 @@ def render_comedy_short(image_files, total_duration):
         check=True,
     )
 
-    font_dir = os.path.expanduser("~/.fonts")
+    font_dir = "/usr/share/fonts/truetype/noto"
     subtitle_style = (
-        "FontName=Lohit Telugu,FontSize=20,PrimaryColour=&H00FFFFFF,"
+        "FontName=Noto Sans Telugu,FontSize=20,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00101010,BackColour=&H80000000,BorderStyle=3,"
         "Outline=2,Shadow=1,Alignment=2,MarginV=170"
     )
