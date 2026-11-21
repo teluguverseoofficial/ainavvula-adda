@@ -305,25 +305,20 @@ def _render_fallback_scene(filename: Path, index: int, caption: str):
 
 
 def generate_realistic_scenes(kit):
-    print(f"[3/5] Generating {SCENE_COUNT} Telugu comedy scenes...")
+    print(f"[3/5] Generating {SCENE_COUNT} photorealistic Telugu comedy scenes...")
     character_bible = "\n".join(
         f"{character['name']}: {character['look']}" for character in kit["characters"]
     )
     images = []
     character_reference = None
     previous_scene = None
-    image_quota_exhausted = False
 
     for index, scene in enumerate(kit["scenes"]):
         filename = Path(f"scene_{index:02}.png")
-        if image_quota_exhausted:
-            _render_fallback_scene(filename, index, scene["caption"])
-            images.append(filename)
-            print(f"Generated fallback {filename.name}: {scene['caption']}")
-            continue
-
         prompt = f"""
 Create one photorealistic live-action cinematic frame for a Telugu comedy short.
+IMPORTANT: Show the actual human characters as people, not icons, silhouettes,
+illustrations, typography, abstract shapes, posters, or text-only graphics.
 Vertical portrait 9:16 composition, realistic skin texture, expressive natural faces,
 authentic South Indian/Telugu setting, cinematic lighting, detailed background.
 Keep all recurring characters visually identical to the supplied reference image(s).
@@ -340,6 +335,7 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
         if previous_scene is not None and previous_scene is not character_reference:
             contents.append(previous_scene)
 
+        last_error = None
         for attempt in range(2):
             try:
                 response = client.models.generate_content(
@@ -355,29 +351,35 @@ No text, no captions, no watermark, no logos, no collage, no split panels.
                     None,
                 )
                 if image_part is None:
-                    raise RuntimeError("Image model returned no image.")
+                    raise RuntimeError("Image model returned no image data.")
                 image = image_part.as_image()
                 image.save(filename)
-                images.append(filename)
                 if character_reference is None:
                     character_reference = Image.open(filename).copy()
                 previous_scene = Image.open(filename).copy()
-                print(f"Generated {filename.name}: {scene['caption']}")
+                images.append(filename)
+                print(f"Generated photorealistic human scene {index + 1}/{SCENE_COUNT}: {scene['caption']}")
                 break
             except Exception as error:
-                print(f"Scene {index + 1} image attempt {attempt + 1} failed: {error}")
-                if "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error):
-                    image_quota_exhausted = True
-                    break
-                time.sleep(3)
-        else:
-            image_quota_exhausted = True
+                last_error = error
+                error_text = str(error)
+                print(f"Scene {index + 1} image attempt {attempt + 1} failed: {error_text}")
+                if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text or "quota" in error_text.lower():
+                    raise RuntimeError(
+                        "Gemini image generation quota is unavailable. No video was uploaded. "
+                        "Enable billing for the Google Cloud project linked to GEMINI_API_KEY "
+                        "and confirm that the selected image model has quota, then rerun."
+                    ) from error
+                if attempt == 0:
+                    time.sleep(3)
 
-        if len(images) <= index:
-            _render_fallback_scene(filename, index, scene["caption"])
-            images.append(filename)
-            print(f"Generated fallback {filename.name}: {scene['caption']}")
+        if len(images) != index + 1:
+            raise RuntimeError(
+                f"Could not generate real human-character artwork for scene {index + 1}: {last_error}"
+            )
 
+    if len(images) != SCENE_COUNT:
+        raise RuntimeError(f"Expected {SCENE_COUNT} real generated images, got {len(images)}.")
     return images
 
 
