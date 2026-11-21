@@ -75,7 +75,7 @@ def generate_viral_telugu_comedy_kit():
     ]
     """
 
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    models_to_try = ["gemini-3.8-flash", "gemini-3.8-pro"]
     last_error = None
 
     for model_name in models_to_try:
@@ -276,7 +276,7 @@ def render_comedy_short(image_files):
     )
 
 
-# 5. UPLOAD ONE VIDEO TO YOUTUBE WITH QUOTA SAFETY
+# 5. UPLOAD ONE VIDEO TO YOUTUBE WITH QUOTA SAFETY & TELUGU LANGUAGE TAGS
 def upload_to_youtube(metadata):
     print("[5/5] Uploading single Telugu comedy short to YouTube...", flush=True)
     creds = Credentials.from_authorized_user_file(
@@ -290,6 +290,8 @@ def upload_to_youtube(metadata):
             "description": f"{metadata['description']}\n\n#AINavvulaAdda #TeluguComedy #AIComedy #TeluguShorts #FunnyVideos",
             "tags": ["AINavvulaAdda", "TeluguComedy", "AIComedy", "TeluguShorts", "FunnyTelugu", "Shorts"],
             "categoryId": "23",
+            "defaultLanguage": "te",
+            "defaultAudioLanguage": "te",
         },
         "status": {
             "privacyStatus": "public",
