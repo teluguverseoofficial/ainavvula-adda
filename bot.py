@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import io
 import json
 import os
 import subprocess
@@ -12,16 +11,17 @@ from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 sys.stdout.reconfigure(line_buffering=True)
 
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 HISTORY_FILE = "used_scenarios.json"
+FONT_PATH = os.path.expanduser("~/.fonts/Lohit-Telugu.ttf")
 
 client = genai.Client(
     api_key=GEMINI_KEY,
-    http_options=types.HttpOptions(timeout=90000),
+    http_options=types.HttpOptions(timeout=60000),
 )
 
 
@@ -43,15 +43,41 @@ def save_used_history(history):
         json.dump(trimmed, f, ensure_ascii=False, indent=2)
 
 
-# 1. FETCH CURRENT VIRAL SCENARIO & BUILD TELUGU AI COMEDY KIT (NO REPEATS)
+def _load_telugu_font(size: int):
+    if os.path.exists(FONT_PATH):
+        try:
+            return ImageFont.truetype(FONT_PATH, size=size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
+    words = text.split()
+    if not words:
+        return []
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        test = f"{current} {word}"
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if (bbox[2] - bbox[0]) <= max_width:
+            current = test
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+# 1. GENERATE FRESH TELUGU COMEDY KIT ON FREE TIER (NO SEARCH GROUNDING, NO REPEATS)
 def generate_viral_telugu_comedy_kit():
     history = load_used_history()
     recent_topics = [item.get("scenario_key", "") for item in history[-30:] if item.get("scenario_key")]
     avoid_list = ", ".join(recent_topics) if recent_topics else "None yet"
 
     prompt = f"""
-    Search the web for currently trending viral comedy formats, memes, and relatable everyday Indian/Telugu social situations right now.
-    Pick ONE fresh, punchy viral comedy scenario suitable for a 30-to-35 second Telugu YouTube Short for the channel "AI Navvula Adda".
+    Create ONE fresh, punchy, relatable Telugu comedy Short script for the YouTube channel "AI Navvula Adda" (Indian/Telugu everyday comedy: office bosses, Telugu parents, friends at a chai stall, traffic excuses, wedding/function drama, or funny everyday twists).
 
     CRITICAL ANTI-REPEAT RULE:
     Do NOT pick or repeat any scenario similar to these already-used ones:
@@ -61,38 +87,38 @@ def generate_viral_telugu_comedy_kit():
     - Write the spoken script in natural, conversational, witty Telugu (everyday spoken Telugu slang, NOT formal news Telugu).
     - Start with an immediate hook/punchline in the very first sentence.
     - Keep the spoken script between 55 and 70 words so pacing is fast and punchy.
-    - Provide a short unique "scenario_key" (3-6 words in English summarizing the specific viral twist) so we never repeat it.
-    - Provide 4 distinct English image prompts describing 3D Pixar-style expressive cartoon characters acting out the 4 beats of this exact viral comedy scenario in an Indian setting.
+    - Provide a short unique "scenario_key" (3-6 words in English summarizing the specific joke) so we never repeat it.
+    - Provide 4 short, punchy beat captions ("scene_captions") in Telugu (2-5 words each) for the 4 comic panels.
 
     Return strictly valid JSON with keys:
-    "scenario_key": "short unique summary of this viral joke",
+    "scenario_key": "short unique summary of this joke",
     "title": "catchy Telugu title with a funny hook ending with #Shorts #AINavvulaAdda #TeluguComedy",
     "description": "2-sentence funny Telugu summary + hashtags",
     "script": "spoken Telugu comedy text only (no stage directions or asterisks)",
-    "scene_prompts": [
-        "3D Pixar animation style, expressive Indian character scene 1...",
-        "3D Pixar animation style, expressive Indian character scene 2...",
-        "3D Pixar animation style, expressive Indian character scene 3...",
-        "3D Pixar animation style, expressive Indian character scene 4..."
+    "scene_captions": [
+        "Beat 1 Telugu caption",
+        "Beat 2 Telugu caption",
+        "Beat 3 Telugu caption",
+        "Beat 4 Telugu caption"
     ]
     """
 
-    models_to_try = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    models_to_try = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
     last_error = None
 
     for model_name in models_to_try:
         for attempt in range(2):
             try:
                 print(
-                    f"[1/5] Fetching viral scenario & generating Telugu script with {model_name} (attempt {attempt + 1})...",
+                    f"[1/5] Generating Telugu comedy script with {model_name} (attempt {attempt + 1})...",
                     flush=True,
                 )
                 response = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        tools=[{"google_search": {}}],
                         response_mime_type="application/json",
+                        temperature=1.0,
                     ),
                 )
                 kit = json.loads(response.text)
@@ -102,7 +128,7 @@ def generate_viral_telugu_comedy_kit():
                 ).hexdigest()[:16]
 
                 if any(entry.get("hash") == fingerprint for entry in history):
-                    print("Duplicate scenario hash detected, retrying for a fresh viral angle...", flush=True)
+                    print("Duplicate scenario hash detected, retrying for a fresh angle...", flush=True)
                     continue
 
                 history.append({
@@ -115,10 +141,10 @@ def generate_viral_telugu_comedy_kit():
             except Exception as e:
                 print(f"Model {model_name} failed: {e}", flush=True)
                 last_error = e
-                backoff = 8 if "429" in str(e) else 3
-                time.sleep(backoff)
+                sleep_sec = 10 if "429" in str(e) else 3
+                time.sleep(sleep_sec)
 
-    raise RuntimeError(f"All Gemini models failed to generate a unique viral skit: {last_error}")
+    raise RuntimeError(f"All Gemini models failed to generate a unique skit: {last_error}")
 
 
 # 2. GENERATE EXPRESSIVE TELUGU VOICEOVER + SUBTITLES
@@ -159,72 +185,54 @@ async def generate_voice_and_subs(script_text):
     raise RuntimeError("Edge TTS failed after 3 attempts.")
 
 
-def _save_part_as_9x16_png(part, filename):
-    inline_data = getattr(part, "inline_data", None)
-    if inline_data and getattr(inline_data, "data", None):
-        raw_bytes = inline_data.data
-        if isinstance(raw_bytes, str):
-            import base64
-            raw_bytes = base64.b64decode(raw_bytes)
-        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-        img = img.resize((1080, 1920), Image.Resampling.LANCZOS)
-        img.save(filename, format="PNG")
-        return True
-    return False
-
-
-# 3. GENERATE 4 CUSTOM 3D COMIC SCENES USING GEMINI IMAGE MODELS
-def generate_comic_scenes(scene_prompts):
-    print("[3/5] Generating 4 custom AI comic scenes...", flush=True)
+# 3. GENERATE 4 VIBRANT COMIC SCENE CARDS LOCALLY (ZERO IMAGE API QUOTA NEEDED)
+def generate_comic_scenes(scene_captions, scenario_key=""):
+    print("[3/5] Generating 4 colorful Telugu comic scene cards locally...", flush=True)
     image_files = []
-    image_models = ["gemini-2.5-flash-image", "gemini-3.1-flash-image"]
 
-    for idx, prompt_text in enumerate(scene_prompts[:4]):
-        full_prompt = (
-            f"{prompt_text}, vibrant colors, exaggerated funny facial expressions, "
-            f"vertical 9:16 composition, high detail 3D render"
-        )
+    palettes = [
+        ((24, 34, 79), (255, 193, 7), (255, 87, 34)),
+        ((15, 76, 92), (0, 229, 255), (255, 214, 0)),
+        ((74, 20, 140), (255, 64, 129), (255, 235, 59)),
+        ((27, 94, 32), (178, 255, 89), (255, 171, 0)),
+    ]
+
+    header_font = _load_telugu_font(44)
+    caption_font = _load_telugu_font(68)
+    badge_font = _load_telugu_font(34)
+
+    for idx in range(4):
+        caption = scene_captions[idx] if idx < len(scene_captions) else f"సీన్ {idx + 1}"
+        bg_top, accent_primary, accent_secondary = palettes[idx % len(palettes)]
         filename = f"scene_{idx}.png"
-        saved = False
 
-        for img_model in image_models:
-            try:
-                response = client.models.generate_content(
-                    model=img_model,
-                    contents=full_prompt,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
-                    ),
-                )
-                candidates = getattr(response, "candidates", None) or []
-                for cand in candidates:
-                    content = getattr(cand, "content", None)
-                    parts = getattr(content, "parts", None) or []
-                    for part in parts:
-                        if _save_part_as_9x16_png(part, filename):
-                            saved = True
-                            break
-                    if saved:
-                        break
-                if saved:
-                    image_files.append(filename)
-                    print(f"Saved {filename} using {img_model}", flush=True)
-                    break
-            except Exception as e:
-                print(f"Image model {img_model} failed on scene {idx}: {e}", flush=True)
-                time.sleep(2)
+        img = Image.new("RGB", (1080, 1920), bg_top)
+        draw = ImageDraw.Draw(img)
 
-        if not saved:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-f", "lavfi", "-i", "color=c=0x1a1a2e:s=1080x1920:d=1",
-                    "-frames:v", "1", filename,
-                ],
-                check=True,
-            )
-            image_files.append(filename)
-            print(f"Saved fallback frame {filename}", flush=True)
+        # Geometric comic burst & accent bands
+        draw.polygon([(0, 0), (1080, 0), (1080, 520), (0, 740)], fill=accent_primary)
+        draw.polygon([(0, 1360), (1080, 1150), (1080, 1920), (0, 1920)], fill=accent_secondary)
+        draw.ellipse([(240, 560), (840, 1160)], fill=(20, 24, 48), outline=(255, 255, 255), width=8)
+
+        # Channel header
+        draw.text((60, 65), "AI Navvula Adda", fill=(15, 20, 40), font=header_font)
+        draw.text((60, 125), f"SCENE {idx + 1} / 4", fill=(255, 255, 255), font=badge_font)
+
+        # Center comic beat caption
+        wrapped = _wrap_text(draw, caption, caption_font, max_width=520)
+        line_height = 84
+        start_y = 860 - (len(wrapped) * line_height) // 2
+        for line_idx, line in enumerate(wrapped):
+            bbox = draw.textbbox((0, 0), line, font=caption_font)
+            text_w = bbox[2] - bbox[0]
+            x = (1080 - text_w) // 2
+            y = start_y + line_idx * line_height
+            draw.text((x + 3, y + 3), line, fill=(0, 0, 0), font=caption_font)
+            draw.text((x, y), line, fill=(255, 255, 255), font=caption_font)
+
+        img.save(filename, format="PNG")
+        image_files.append(filename)
+        print(f"Saved {filename}", flush=True)
 
     return image_files
 
@@ -346,6 +354,6 @@ if __name__ == "__main__":
     print(f"Viral Scenario: {kit.get('scenario_key', '')}", flush=True)
     print(f"Generated Comedy Title: {kit['title']}", flush=True)
     asyncio.run(generate_voice_and_subs(kit["script"]))
-    scenes = generate_comic_scenes(kit["scene_prompts"])
+    scenes = generate_comic_scenes(kit.get("scene_captions", []), kit.get("scenario_key", ""))
     render_comedy_short(scenes)
     upload_to_youtube(kit)
