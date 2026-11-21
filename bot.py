@@ -36,7 +36,6 @@ def load_used_history():
 
 
 def save_used_history(history):
-    # Keep the last 100 entries so the prompt stays compact while preventing repeats
     trimmed = history[-100:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(trimmed, f, ensure_ascii=False, indent=2)
@@ -50,7 +49,7 @@ def generate_viral_telugu_comedy_kit():
 
     prompt = f"""
     Search the web for currently trending viral comedy formats, memes, and relatable everyday Indian/Telugu social situations right now.
-    Pick ONE fresh, punchy viral comedy scenario suitable for a 30-to-35 second Telugu YouTube Short.
+    Pick ONE fresh, punchy viral comedy scenario suitable for a 30-to-35 second Telugu YouTube Short for the channel "AI Navvula Adda".
 
     CRITICAL ANTI-REPEAT RULE:
     Do NOT pick or repeat any scenario similar to these already-used ones:
@@ -65,7 +64,7 @@ def generate_viral_telugu_comedy_kit():
 
     Return strictly valid JSON with keys:
     "scenario_key": "short unique summary of this viral joke",
-    "title": "catchy Telugu title with a funny hook ending with #Shorts #TeluguComedy #AIComedy",
+    "title": "catchy Telugu title with a funny hook ending with #Shorts #AINavvulaAdda #TeluguComedy",
     "description": "2-sentence funny Telugu summary + hashtags",
     "script": "spoken Telugu comedy text only (no stage directions or asterisks)",
     "scene_prompts": [
@@ -288,8 +287,8 @@ def upload_to_youtube(metadata):
     body = {
         "snippet": {
             "title": metadata["title"][:100],
-            "description": f"{metadata['description']}\n\n#TeluguComedy #AIComedy #TeluguShorts #FunnyVideos #TrendingTelugu",
-            "tags": ["TeluguComedy", "AIComedy", "TeluguShorts", "FunnyTelugu", "TrendingMemes", "Shorts"],
+            "description": f"{metadata['description']}\n\n#AINavvulaAdda #TeluguComedy #AIComedy #TeluguShorts #FunnyVideos",
+            "tags": ["AINavvulaAdda", "TeluguComedy", "AIComedy", "TeluguShorts", "FunnyTelugu", "Shorts"],
             "categoryId": "23",
         },
         "status": {
